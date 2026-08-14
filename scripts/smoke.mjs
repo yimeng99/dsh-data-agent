@@ -16,6 +16,7 @@ import * as dq from 'dsh-data-query'
 import * as provider from 'dsh-data-query-mysql'
 import * as tool from 'dsh-tool-data-query'
 import * as configPlugin from 'dsh-data-query-config'
+import * as echartsTool from 'dsh-tool-echarts'
 import { buildEChartsOption } from 'dsh-tool-echarts'
 
 // ---------------------------------------------------------------------------
@@ -247,8 +248,30 @@ assert.deepEqual(
   'hot update must register added sources',
 )
 
+// ---------------------------------------------------------------------------
+// 7. generate_chart tool: presentationMeta feeds the inline chart plugin
+// ---------------------------------------------------------------------------
+const chartCtx = new Context()
+let chartDef
+chartCtx.provide('tools', {
+  register: (definition) => {
+    chartDef = definition
+  },
+})
+echartsTool.apply(chartCtx)
+assert.equal(chartDef.name, 'generate_chart')
+assert.equal(typeof chartDef.output.presentationMeta, 'function', 'presentationMeta must exist for the client plugin')
+
+const meta = chartDef.output.presentationMeta(
+  { type: 'line', title: '订单趋势', xField: 'month', yField: 'count', data: [{ month: '2025-01', count: 10 }] },
+  { option: buildEChartsOption({ type: 'line', title: '订单趋势', xField: 'month', yField: 'count', data: [{ month: '2025-01', count: 10 }] }), html: '<html/>' },
+)
+assert.equal(meta.kind, 'echarts')
+assert.equal(meta.title, '订单趋势')
+assert.deepEqual(meta.option.series[0].data, [10])
+
 await dispose()
 await disposeConfig()
 console.log(
-  'smoke OK — facade, multi-source routing, settings-driven config + hot update, tool, chart builder and validator all wired correctly',
+  'smoke OK — facade, multi-source routing, settings-driven config + hot update, tool, chart presentationMeta and validator all wired correctly',
 )

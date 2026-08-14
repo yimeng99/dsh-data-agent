@@ -59,6 +59,7 @@ Service，Agent 通过 Tool 消费它，更换数据库 Provider **完全不需�
 | `packages/dsh-data-query-postgres` | Provider | PostgreSQL 后端（V0.2，接口与 MySQL 完全一致） |
 | `packages/dsh-tool-data-query` | Consumer / Tool | 注册 `data_query` 工具（带 `source` 参数），把自然语言问题转发给 `ctx.dataQuery` |
 | `packages/dsh-tool-echarts` | Consumer / Tool | 注册 `generate_chart` 工具：表格数据 → ECharts option **+ 自包含 HTML 页面**（浏览器可直接渲染真图表） |
+| `packages/dsh-client-ui-chart` | 客户端插件 | 把 `generate_chart` 结果**内嵌渲染成聊天里的 ECharts 图表**（`tool.call.toolview` 键控座位，读取工具的 `presentationMeta`） |
 
 ## 环境要求
 
@@ -157,14 +158,15 @@ dsh web --patch ./cordis.patch.yml
 
 ## 图表展示
 
-`generate_chart` 返回两样东西：ECharts **option** 对象（模型可基于它分析），以及
-一个**自包含 HTML 页面**（CDN 引入 ECharts，任何浏览器可直接渲染真图表）。当你说
-"画个图"时，Agent 会用 `write` 工具把 HTML 存成 `.html` 文件（如
-`charts/trend.html`）；生成的文件出现在聊天**交付物**行，点击即可打开
-可交互的真图表。
+两条互补路径：
 
-未来可通过客户端插件把同一 option 内嵌渲染进聊天（tool-result 展示接缝），
-这是独立的 Web UI 工程。
+1. **聊天内嵌（客户端插件）。** `generate_chart` 发布 `presentationMeta`
+   （`{ kind: 'echarts', option }`），随工具结果落地；`dsh-client-ui-chart`
+   客户端插件把它渲染成**聊天流里的实时 ECharts 图表**（注册在开放的
+   `tool.call.toolview` 键控座位，不影响其他工具）。
+2. **可打开的 HTML 交付物。** 工具同时返回自包含 HTML 页面（CDN 引入
+   ECharts）；Agent 用 `write` 工具存成 `.html` 文件（如 `charts/trend.html`），
+   出现在聊天**交付物**行，任何浏览器可打开——适合分享或嵌入。
 
 ## 多数据源
 
@@ -230,7 +232,7 @@ SQL: SELECT COUNT(*) FROM orders WHERE created_at >= NOW() - INTERVAL 30 DAY
 | V0.2.5 | 多数据源路由：`dataQuery` 门面 + 按实例 `sourceId` 注册表 | ✅ |
 | V0.3 | 设置页配置数据源（`data-query-sources`，实时生效）+ 自包含图表 HTML 交付物 | ✅ |
 | V0.4 | SQL AST 校验器；`maxRows`/`timeout` 精细化；审计日志 | — |
-| V0.5 | 聊天内嵌图表卡片（客户端插件）+ Permission-aware Text-to-SQL：RBAC / Tenant / Data Scope | — |
+| V0.5 | 聊天内嵌图表卡片（客户端插件）+ Permission-aware Text-to-SQL：RBAC / Tenant / Data Scope | 内嵌图表 ✅，RBAC — |
 
 ## 设计说明
 

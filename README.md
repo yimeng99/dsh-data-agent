@@ -61,6 +61,7 @@ Tools.
 | `packages/dsh-data-query-postgres` | Provider | PostgreSQL backend (V0.2, same interface as MySQL) |
 | `packages/dsh-tool-data-query` | Consumer / Tool | Registers the `data_query` tool (with a `source` argument); forwards natural-language questions to `ctx.dataQuery` |
 | `packages/dsh-tool-echarts` | Consumer / Tool | Registers the `generate_chart` tool: tabular rows → ECharts option **plus a self-contained HTML page** that renders the real chart |
+| `packages/dsh-client-ui-chart` | Client plugin | Renders `generate_chart` results as **inline ECharts in the chat** (the `tool.call.toolview` keyed seat, reading the tool's `presentationMeta`) |
 
 ## Requirements
 
@@ -160,14 +161,17 @@ In the Web UI (new conversation), just ask:
 
 ## Chart Display
 
-`generate_chart` returns two things: an ECharts **option** object the model can
-reason about, and a **self-contained HTML page** (ECharts loaded from a CDN)
-that renders the real chart. When you ask for a chart, the agent saves the HTML
-with the `write` tool (e.g. `charts/trend.html`); the produced file appears in
-the chat's **deliverables** row and opens as a live, interactive chart.
+Two complementary paths:
 
-A future client plugin can render the same option inline in the chat (via the
-tool-result presentation seam) — that is separate Web UI work.
+1. **Inline in the chat (client plugin).** `generate_chart` publishes a
+   `presentationMeta` payload (`{ kind: 'echarts', option }`) that lands on the
+   tool result; the `dsh-client-ui-chart` client plugin renders it as a live
+   ECharts chart right in the conversation (registered on the open
+   `tool.call.toolview` keyed seat, so other tools are untouched).
+2. **Openable HTML deliverable.** The tool also returns a self-contained HTML
+   page (ECharts from a CDN); the agent saves it with the `write` tool (e.g.
+   `charts/trend.html`), it appears in the chat's **deliverables** row, and
+   opens in any browser — useful when you want to share or embed the chart.
 
 ## Multiple Data Sources
 
@@ -240,7 +244,7 @@ Multi-source routing with the real LLM: two MySQL sources (`mysql` → `demo`,
 | V0.2.5 | Multi-source routing: `dataQuery` facade + per-instance `sourceId` registry | ✅ |
 | V0.3 | Settings-UI data source configuration (`data-query-sources`, live) + self-contained chart HTML deliverable | ✅ |
 | V0.4 | SQL AST validator; finer `maxRows`/`timeout`; audit log | — |
-| V0.5 | Inline chart cards (client plugin) + Permission-aware Text-to-SQL: RBAC / Tenant / Data Scope | — |
+| V0.5 | Inline chart cards (client plugin) + Permission-aware Text-to-SQL: RBAC / Tenant / Data Scope | inline charts ✅, RBAC — |
 
 ## Design Notes
 

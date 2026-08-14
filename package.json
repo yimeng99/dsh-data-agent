@@ -16,6 +16,7 @@
     "dsh-data-query-config": "workspace:*",
     "dsh-data-query-mysql": "workspace:*",
     "dsh-data-query-postgres": "workspace:*",
+    "dsh-client-ui-chart": "workspace:*",
     "dsh-tool-data-query": "workspace:*",
     "dsh-tool-echarts": "workspace:*",
     "mysql2": "^3.11.0",

@@ -30,3 +30,9 @@
     # Consumer: exposes `generate_chart` to the agent.
     - id: tool-echarts
       name: 'dsh-tool-echarts'
+
+    # Client plugin: renders generate_chart results as INLINE ECharts in the
+    # chat (tool.call.toolview keyed seat). Loader entry so the client-modules
+    # scanner discovers the dsh.client declaration and serves the bundle.
+    - id: client-ui-chart
+      name: 'dsh-client-ui-chart'

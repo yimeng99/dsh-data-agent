@@ -137,6 +137,14 @@ export function apply(ctx: Context): void {
             text: `ECharts option:\n${JSON.stringify(value.option, null, 2)}\n\nSelf-contained HTML (${value.html.length} bytes) — save it with the write tool to a .html file to view the live chart.`,
           },
         ],
+        // Replayable presentation metadata: lands on the client's
+        // ToolResultNode.meta and lets the dsh-client-ui-chart plugin render
+        // the chart inline in the chat (tool.call.toolview seat).
+        presentationMeta: (args, value) => ({
+          kind: 'echarts',
+          title: args.title ?? args.type,
+          option: value.option,
+        }),
       },
       execute: (args) => {
         const option = buildEChartsOption(args)
