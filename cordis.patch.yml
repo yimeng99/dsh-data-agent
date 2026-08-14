@@ -1,0 +1,63 @@
+# =============================================================================
+# dsh-data-agent — DeepSeek Harness profile overlay
+# =============================================================================
+# Apply with:
+#   dsh --profile web --patch ./cordis.patch.yml
+#
+# Prerequisite: the workspace packages must be resolvable from the profile
+# (see README.md "接线到 DeepSeek Harness"):
+#   - link packages/<pkg> into $DSH_HOME/profiles/node_modules, or
+#   - `dsh plugin --profile web add file:<abs path>/packages/<pkg>` for each.
+#
+# NOTE: exactly ONE data provider may be active — both MySQL and PostgreSQL
+# register the same `ctx.dataQuery` service and Cordis rejects a duplicate
+# registration. Switch providers by commenting one block out and uncommenting
+# the other; the tools (`dsh-tool-data-query`, `dsh-tool-echarts`) never change.
+#
+# Secrets are read from the environment: set DSH_DB_PASSWORD before boot.
+# -----------------------------------------------------------------------------
+
+- insert:
+    # NOTE: `dsh-data-query` (the Service Definition library) needs NO loader
+    # row — providers import it directly, like the official `dsh-fs` package.
+
+    # Provider: MySQL implementation of `ctx.dataQuery`.
+    - id: data-query-mysql
+      name: 'dsh-data-query-mysql'
+      config:
+        host: '127.0.0.1'
+        port: 3306
+        user: 'root'
+        password: !!js process.env.DSH_DB_PASSWORD ?? ''
+        database: 'demo'
+        # LLM route used for Text-to-SQL generation (the tool forwards the
+        # conversation's own route when the agent carries one).
+        llmProvider: 'deepseek-official'
+        llmModel: 'deepseek-v4-flash'
+        # Safety rails.
+        maxRows: 100
+        timeoutMs: 15000
+        # information_schema cache TTL (ms); 0 disables caching.
+        schemaCacheTtlMs: 60000
+
+    # Provider (disabled by default): PostgreSQL implementation of `ctx.dataQuery`.
+    # - id: data-query-postgres
+    #   name: 'dsh-data-query-postgres'
+    #   config:
+    #     host: '127.0.0.1'
+    #     port: 5432
+    #     user: 'postgres'
+    #     password: !!js process.env.DSH_DB_PASSWORD ?? ''
+    #     database: 'demo'
+    #     llmProvider: 'deepseek-official'
+    #     llmModel: 'deepseek-v4-flash'
+    #     maxRows: 100
+    #     timeoutMs: 15000
+
+    # Consumer: exposes `data_query` to the agent.
+    - id: tool-data-query
+      name: 'dsh-tool-data-query'
+
+    # Consumer: exposes `generate_chart` to the agent.
+    - id: tool-echarts
+      name: 'dsh-tool-echarts'

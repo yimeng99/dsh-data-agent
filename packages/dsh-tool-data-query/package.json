@@ -1,0 +1,30 @@
+{
+  "name": "dsh-tool-data-query",
+  "version": "0.1.0",
+  "description": "Agent tool exposing the dsh-data-query capability: ask a natural-language business question and get structured rows back",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js"
+    }
+  },
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rimraf lib"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "dsh-data-query": "file:../dsh-data-query"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

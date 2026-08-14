@@ -1,0 +1,32 @@
+{
+  "name": "dsh-data-query-mysql",
+  "version": "0.1.0",
+  "description": "MySQL provider for the dsh-data-query capability: schema discovery + Text-to-SQL + SQL safety validation + read-only execution",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js"
+    }
+  },
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rimraf lib"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "dsh-data-query": "file:../dsh-data-query",
+    "mysql2": "^3.11.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

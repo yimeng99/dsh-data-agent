@@ -1,0 +1,26 @@
+{
+  "name": "dsh-data-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An enterprise-ready AI data analyst plugin suite for DeepSeek Harness: natural language -> Text-to-SQL -> database -> ECharts",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "clean": "pnpm -r run clean"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@types/node": "^22.0.0",
+    "dsh-data-query": "workspace:*",
+    "dsh-data-query-mysql": "workspace:*",
+    "dsh-tool-data-query": "workspace:*",
+    "dsh-tool-echarts": "workspace:*",
+    "mysql2": "^3.11.0",
+    "pg": "^8.13.0",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
