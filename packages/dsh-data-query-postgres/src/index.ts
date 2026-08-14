@@ -14,9 +14,9 @@ import pg from 'pg'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import {
   DataQueryError,
-  DataQueryService,
   buildTextToSqlPrompt,
   extractSql,
+  type DataQueryBackend,
   type DataQueryCapabilities,
   type DataQueryRequest,
   type DataQueryResult,
@@ -26,6 +26,10 @@ import {
 
 /** Resolved plugin configuration. */
 export interface Config {
+  /** Unique data source id exposed to the `data_query` tool's `source` arg. */
+  sourceId: string
+  /** Make this source the default (fallback) when `source` is omitted. */
+  isDefault: boolean
   host: string
   port: number
   user: string
@@ -40,6 +44,8 @@ export interface Config {
 
 /** Runtime schema for the plugin configuration. */
 export const Config = z.object({
+  sourceId: z.string().default('postgresql'),
+  isDefault: z.boolean().default(false),
   host: z.string().default('127.0.0.1'),
   port: z.number().default(5432),
   user: z.string().default('postgres'),
@@ -95,12 +101,14 @@ function sanitizeCell(value: unknown): unknown {
   return value
 }
 
-export class PostgresDataQueryService extends DataQueryService {
+export class PostgresDataQueryService implements DataQueryBackend {
   private readonly pool: pg.Pool
   private schemaCache: { at: number; schema: DataQueryTable[] } | undefined
 
-  constructor(ctx: Context, private readonly config: Config) {
-    super(ctx)
+  constructor(
+    private readonly ctx: Context,
+    private readonly config: Config,
+  ) {
     this.pool = new pg.Pool({
       host: config.host,
       port: config.port,
@@ -323,11 +331,17 @@ function groupSchema(
 }
 
 export const name = 'data-query-postgres'
-export const inject = ['llm']
+export const inject = ['dataQuery', 'llm']
 
 export function apply(ctx: Context, config: Config): () => Promise<void> {
   const service = new PostgresDataQueryService(ctx, config)
-  return () => service.stop()
+  const unregister = ctx.dataQuery.register(config.sourceId, service, {
+    default: config.isDefault,
+  })
+  return async () => {
+    unregister()
+    await service.stop()
+  }
 }
 
 export { extractSql, validateReadOnlySql }

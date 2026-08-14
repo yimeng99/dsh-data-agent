@@ -46,6 +46,11 @@ export interface DataQueryRequest extends DataQueryIdentity {
    */
   llmProvider?: string
   llmModel?: string
+  /**
+   * Data source id to route to (e.g. `mysql`, `postgres`, `analytics`).
+   * Omit to use the default (first registered) source.
+   */
+  source?: string
 }
 
 /** One column of a discovered table. */
@@ -90,6 +95,8 @@ export interface DataQueryResult {
 
 export type DataQueryErrorCode =
   | 'NO_PROVIDER'
+  | 'NO_SOURCE'
+  | 'DUPLICATE_SOURCE'
   | 'INVALID_QUESTION'
   | 'SCHEMA_LOAD_FAILED'
   | 'TEXT_TO_SQL_FAILED'
@@ -118,29 +125,115 @@ export interface DataQueryCapabilities {
 }
 
 /**
- * Abstract data query service. A provider subclass implements `query()`; the
- * `dataQuery` name is registered on `ctx` by the `Service` base constructor.
+ * One registered data source: a concrete provider instance behind the
+ * `dataQuery` facade. Providers implement this interface and register
+ * themselves with a `sourceId`; they never mount the facade themselves.
  */
-export abstract class DataQueryService extends Service {
+export interface DataQueryBackend {
+  /** Translate a question into validated SQL, execute it, and return rows. */
+  query(request: DataQueryRequest): Promise<DataQueryResult>
+
+  /** Provider capability metadata. */
+  capabilities(): DataQueryCapabilities
+
+  /** Drop the cached schema snapshot and reload it from the database. */
+  refreshSchema(): Promise<void>
+}
+
+/** One registered data source entry as seen through {@link DataQueryService.list}. */
+export interface DataQuerySourceInfo {
+  id: string
+  capabilities: DataQueryCapabilities
+}
+
+/**
+ * The `dataQuery` facade service (registered on `ctx.dataQuery` by this
+ * package's plugin `apply`). Providers register their backends under distinct
+ * `sourceId`s, so ANY NUMBER of databases can be active at once; `query()`
+ * routes by `request.source` (defaulting to the first registered source).
+ */
+export class DataQueryService extends Service {
+  private readonly backends = new Map<string, DataQueryBackend>()
+  private defaultSource: string | undefined
+
   constructor(ctx: import('@deepseek-ai/cordis').Context) {
     super(ctx, 'dataQuery')
   }
 
-  /** Translate a question into validated SQL, execute it, and return rows. */
-  abstract query(request: DataQueryRequest): Promise<DataQueryResult>
+  /**
+   * Register a provider backend under a stable id.
+   * @param id - unique data source id, e.g. `mysql`, `postgres`, `analytics`.
+   * @param backend - the provider instance.
+   * @param options - `default: true` makes this the fallback source (the first
+   *   registered source becomes the default automatically).
+   * @returns a disposer that unregisters the source.
+   */
+  register(id: string, backend: DataQueryBackend, options: { default?: boolean } = {}): () => void {
+    if (this.backends.has(id)) {
+      throw new DataQueryError(`data source "${id}" is already registered`, 'DUPLICATE_SOURCE')
+    }
+    this.backends.set(id, backend)
+    if (options.default || this.defaultSource === undefined) this.defaultSource = id
+    return () => {
+      this.backends.delete(id)
+      if (this.defaultSource === id) this.defaultSource = [...this.backends.keys()][0]
+    }
+  }
 
-  /** Provider capability metadata. */
-  abstract capabilities(): DataQueryCapabilities
+  /** Resolve the backend for a source id, or the default when omitted. */
+  resolve(source?: string): DataQueryBackend {
+    const id = source ?? this.defaultSource
+    if (id === undefined) {
+      throw new DataQueryError('no data source is registered (load a provider plugin)', 'NO_PROVIDER')
+    }
+    const backend = this.backends.get(id)
+    if (!backend) {
+      throw new DataQueryError(
+        `unknown data source "${id}" (available: ${[...this.backends.keys()].join(', ') || 'none'})`,
+        'NO_SOURCE',
+      )
+    }
+    return backend
+  }
 
-  /** Drop the cached schema snapshot and reload it from the database. */
-  abstract refreshSchema(): Promise<void>
+  /** Registered data sources (id + capabilities). */
+  list(): DataQuerySourceInfo[] {
+    return [...this.backends.entries()].map(([id, backend]) => ({
+      id,
+      capabilities: backend.capabilities(),
+    }))
+  }
+
+  /** Route a query to the named source (or the default). */
+  async query(request: DataQueryRequest): Promise<DataQueryResult> {
+    const id = request.source ?? this.defaultSource
+    const backend = this.resolve(id)
+    // Stamp the resolved source id onto the request so the backend (and any
+    // downstream audit/logging) can observe which source actually served it.
+    return backend.query({ ...request, source: id })
+  }
+
+  /** Refresh the schema cache of one source (or all sources). */
+  async refreshSchema(source?: string): Promise<void> {
+    if (source !== undefined) {
+      await this.resolve(source).refreshSchema()
+      return
+    }
+    await Promise.all([...this.backends.values()].map((b) => b.refreshSchema()))
+  }
 }
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
-    /** The active data query provider, when one is loaded. */
+    /** The data query facade; providers register their backends on it. */
     dataQuery: DataQueryService
   }
+}
+
+/** Mount the `dataQuery` facade. Providers depend on it via `inject: ['dataQuery']`. */
+export const name = 'data-query'
+export function apply(ctx: import('@deepseek-ai/cordis').Context): void {
+  void new DataQueryService(ctx)
 }
 
 // ---------------------------------------------------------------------------

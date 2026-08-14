@@ -3,12 +3,16 @@
  * examples/mysql/schema.sql). The LLM stage is stubbed — everything else
  * (schema discovery, validation, execution, timeout, abort) is real.
  *
+ * Also verifies MULTI-SOURCE routing: two MySQL instances (`mysql` → demo,
+ * `demo2` → demo2 database) registered on the same facade.
+ *
  * Run: node scripts/e2e.mjs
  * Env overrides: DSH_DB_HOST / DSH_DB_PORT / DSH_DB_USER / DSH_DB_PASSWORD
  */
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import mysql from 'mysql2/promise'
+import * as dq from 'dsh-data-query'
 import * as provider from 'dsh-data-query-mysql'
 
 const host = process.env.DSH_DB_HOST ?? '127.0.0.1'
@@ -16,6 +20,7 @@ const port = Number(process.env.DSH_DB_PORT ?? 3306)
 const user = process.env.DSH_DB_USER ?? 'root'
 const password = process.env.DSH_DB_PASSWORD ?? ''
 const database = 'demo'
+const database2 = 'demo2'
 
 // ---------------------------------------------------------------------------
 // Stub LLM: answers text-to-sql with canned SQL, streamed as StreamChunks.
@@ -57,24 +62,37 @@ const llmStub = {
 }
 
 // ---------------------------------------------------------------------------
-// Boot: context + stub llm + real MySQL provider
+// Boot: context + facade + stub llm + two real MySQL providers
 // ---------------------------------------------------------------------------
 const ctx = new Context()
+dq.apply(ctx)
 ctx.provide('llm', llmStub)
-const dispose = provider.apply(ctx, {
+
+const makeConfig = (sourceId, db, isDefault) => ({
+  sourceId,
+  isDefault,
   host,
   port,
   user,
   password,
-  database,
+  database: db,
   llmProvider: 'stub',
   llmModel: 'stub',
   maxRows: 100,
   timeoutMs: 5000,
   schemaCacheTtlMs: 60000,
 })
+
+const dispose1 = provider.apply(ctx, makeConfig('mysql', database, true))
+const dispose2 = provider.apply(ctx, makeConfig('demo2', database2, false))
+
 const dataQuery = ctx.get('dataQuery')
-assert.ok(dataQuery, 'ctx.dataQuery must be provided')
+assert.ok(dataQuery, 'ctx.dataQuery facade must be provided')
+assert.deepEqual(
+  dataQuery.list().map((s) => s.id),
+  ['mysql', 'demo2'],
+  'both sources must be registered',
+)
 
 // Reference connection for expected values.
 const db = await mysql.createConnection({ host, port, user, password, database })
@@ -165,8 +183,34 @@ try {
     (err) => err.code === 'ABORTED',
   )
 
-  console.log('e2e OK — real MySQL: schema discovery, text-to-sql, LIMIT clamp, rejections, abort')
+  // -------------------------------------------------------------------------
+  // 8. MULTI-SOURCE routing: default vs explicit source, both real databases
+  // -------------------------------------------------------------------------
+  const defaultCount = (await dataQuery.query({ question: 'x', sql: 'SELECT COUNT(*) AS c FROM orders' }))
+    .rows[0].c
+  assert.equal(defaultCount, 360, 'default source must be `mysql` (demo)')
+
+  const demo2 = await dataQuery.query({ question: 'x', source: 'demo2', sql: 'SELECT COUNT(*) AS c FROM orders' })
+  assert.equal(demo2.rows[0].c, 360, 'explicit source `demo2` must query the demo2 database')
+  assert.ok(demo2.schema.every((t) => t.schema === 'demo2'), 'schema snapshot must come from demo2')
+
+  // Text-to-sql also routes per source: the same question on demo2 (identical
+  // seed data, so the 30-day count must match demo's).
+  llmStub.lastQuestion = '统计最近 30 天订单数量'
+  const demo2Nl = await dataQuery.query({ question: '统计最近 30 天订单数量', source: 'demo2' })
+  assert.equal(demo2Nl.rows[0].order_count, expected30[0].c)
+
+  await assert.rejects(
+    dataQuery.query({ question: 'x', source: 'nope', sql: 'SELECT 1' }),
+    (err) => err.code === 'NO_SOURCE',
+    'unknown source must raise NO_SOURCE',
+  )
+
+  console.log(
+    'e2e OK — real MySQL multi-source: schema discovery, text-to-sql, routing (mysql/demo2), LIMIT clamp, rejections, abort',
+  )
 } finally {
-  await dispose()
+  await dispose1()
+  await dispose2()
   await db.end()
 }

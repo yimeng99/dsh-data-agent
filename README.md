@@ -39,11 +39,14 @@ Tools.
 
 - **Natural language → SQL**: the agent turns a business question into read-only
   SQL through the same LLM route as the conversation.
+- **Multi-source routing**: any number of databases can be active at once —
+  each provider instance registers under a `sourceId` (e.g. `mysql`, `demo2`,
+  `postgresql`) and the `data_query` tool routes by its `source` argument.
 - **Automatic schema discovery**: tables, columns, comments and foreign keys are
   read from `information_schema` (with a TTL cache) and fed to the model.
 - **Safety by default**: only `SELECT` / `WITH`; write/DDL keywords are rejected;
   `LIMIT` is clamped; every execution has a timeout and honors `AbortSignal`.
-- **Replaceable providers**: MySQL today, PostgreSQL implemented — add
+- **Replaceable providers**: MySQL and PostgreSQL implemented — add
   ClickHouse/Doris by writing one provider package.
 - **Charts**: `generate_chart` turns query rows into a ready-to-render ECharts
   option (line / bar / pie / scatter).
@@ -52,10 +55,10 @@ Tools.
 
 | Package | Layer | Responsibility |
 | --- | --- | --- |
-| `packages/dsh-data-query` | Service Definition | Declares the `dataQuery` capability (request/result/error types + abstract service + shared SQL-safety utilities), database-agnostic |
-| `packages/dsh-data-query-mysql` | Provider | MySQL implementation: information_schema discovery → LLM Text-to-SQL → SQL validation → read-only execution |
-| `packages/dsh-data-query-postgres` | Provider | PostgreSQL implementation (V0.2, same interface as MySQL) |
-| `packages/dsh-tool-data-query` | Consumer / Tool | Registers the `data_query` tool; forwards natural-language questions to `ctx.dataQuery` |
+| `packages/dsh-data-query` | Service Definition + Facade | Declares the `dataQuery` capability (request/result/error types + shared SQL-safety utilities) and mounts the routing facade (`ctx.dataQuery`) that providers register backends on |
+| `packages/dsh-data-query-mysql` | Provider | MySQL backend: information_schema discovery → LLM Text-to-SQL → SQL validation → read-only execution (one instance per `sourceId`) |
+| `packages/dsh-data-query-postgres` | Provider | PostgreSQL backend (V0.2, same interface as MySQL) |
+| `packages/dsh-tool-data-query` | Consumer / Tool | Registers the `data_query` tool (with a `source` argument); forwards natural-language questions to `ctx.dataQuery` |
 | `packages/dsh-tool-echarts` | Consumer / Tool | Registers the `generate_chart` tool; tabular rows → ECharts option |
 
 ## Requirements
@@ -127,13 +130,10 @@ export DSH_DB_PASSWORD='your-mysql-password'    # PowerShell: $env:DSH_DB_PASSWO
 dsh web --patch ./cordis.patch.yml
 ```
 
-`cordis.patch.yml` registers `data-query-mysql` (as `ctx.dataQuery`) plus the
-`data_query` and `generate_chart` tools. Restart `dsh web` if HMR does not pick
-the change up automatically.
-
-> **Only one provider may be active.** To use PostgreSQL instead of MySQL,
-> comment out the MySQL block in `cordis.patch.yml`, uncomment the PostgreSQL
-> block, and install `dsh-data-query-postgres` the same way.
+`cordis.patch.yml` mounts the `dataQuery` facade, registers **two MySQL data
+sources** (`mysql` → `demo`, default; `demo2` → `demo2`) plus the `data_query`
+and `generate_chart` tools (a PostgreSQL source is included as a commented
+example). Restart `dsh web` if HMR does not pick the change up automatically.
 
 ### 5. Try it
 
@@ -142,20 +142,36 @@ In the Web UI (new conversation), just ask:
 - 「统计一下最近 30 天订单数量」/ "Count orders in the last 30 days"
 - 「查询产品销量前 10」/ "Top 10 products by sales"
 - 「帮我分析最近 12 个月订单趋势，并画一个折线图」/ "Analyze the 12-month order trend and draw a line chart"
+- 「用 demo2 数据源统计订单数量」/ "Count orders in the **demo2** data source"
 
-The agent will call `data_query` → `generate_chart` automatically.
+The agent will call `data_query` (routing by `source` when you name one) →
+`generate_chart` automatically.
 
-## Switching Providers (Capability Seam)
+## Multiple Data Sources
 
-Only **one** provider may register `ctx.dataQuery`. Switch to PostgreSQL:
+Any number of provider instances can be active at once — each registers under a
+distinct `sourceId`:
 
-```bash
-dsh plugin --profile web add file:$REPO/packages/dsh-data-query-postgres
-dsh plugin --profile web remove dsh-data-query-mysql
+```yaml
+- id: data-query
+  name: 'dsh-data-query'            # facade: ctx.dataQuery
+
+- id: data-query-mysql              # source 1: default
+  name: 'dsh-data-query-mysql'
+  config: { sourceId: 'mysql', isDefault: true, database: 'demo', ... }
+
+- id: data-query-mysql-demo2        # source 2: another MySQL instance
+  name: 'dsh-data-query-mysql'
+  config: { sourceId: 'demo2', database: 'demo2', ... }
+
+- id: data-query-postgres           # source 3: PostgreSQL
+  name: 'dsh-data-query-postgres'
+  config: { sourceId: 'postgresql', database: 'demo', ... }
 ```
 
-`dsh-tool-data-query` and `dsh-tool-echarts` stay untouched. New dialects
-(ClickHouse / Doris / SQLServer…) are just another provider package mirroring
+The `data_query` tool's `source` argument picks the backend; omitted → the
+default (first registered / `isDefault: true`). New dialects (ClickHouse /
+Doris / SQLServer…) are just another provider package mirroring
 `dsh-data-query-mysql`.
 
 ## Security Design (built into V0.1)
@@ -196,12 +212,18 @@ SQL: SELECT COUNT(*) FROM orders WHERE created_at >= NOW() - INTERVAL 30 DAY
 and a two-tool flow (`data_query` + `generate_chart`) producing a 12-month order
 trend line chart.
 
+Multi-source routing with the real LLM: two MySQL sources (`mysql` → `demo`,
+`demo2` → `demo2`) registered side by side — the agent routes by `source`
+("统计 demo2 数据源订单总数" → returns 361, while the default source returns
+360), proving the registry picks the right database per question.
+
 ## Roadmap
 
 | Version | Content | Status |
 | --- | --- | --- |
 | V0.1 | MySQL + `data_query` + Text-to-SQL + basic SQL validation | ✅ |
 | V0.2 | PostgreSQL provider; schema cache & comment enrichment | ✅ implemented, live-DB test pending |
+| V0.2.5 | Multi-source routing: `dataQuery` facade + per-instance `sourceId` registry | ✅ |
 | V0.3 | SQL AST validator; finer `maxRows`/`timeout`; audit log | — |
 | V0.4 | ECharts line/bar/pie/scatter included; custom client render module | tool included |
 | V0.5 | Permission-aware Text-to-SQL: RBAC / Tenant / Data Scope policy engine + SQL rewrite | — |

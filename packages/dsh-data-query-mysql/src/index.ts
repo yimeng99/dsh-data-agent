@@ -24,9 +24,9 @@ import mysql from 'mysql2/promise'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import {
   DataQueryError,
-  DataQueryService,
   buildTextToSqlPrompt,
   extractSql,
+  type DataQueryBackend,
   type DataQueryCapabilities,
   type DataQueryRequest,
   type DataQueryResult,
@@ -36,6 +36,10 @@ import {
 
 /** Resolved plugin configuration (schemastery output shape). */
 export interface Config {
+  /** Unique data source id exposed to the `data_query` tool's `source` arg. */
+  sourceId: string
+  /** Make this source the default (fallback) when `source` is omitted. */
+  isDefault: boolean
   host: string
   port: number
   user: string
@@ -54,6 +58,8 @@ export interface Config {
 
 /** Runtime schema for the plugin configuration (validated by the loader). */
 export const Config = z.object({
+  sourceId: z.string().default('mysql'),
+  isDefault: z.boolean().default(false),
   host: z.string().default('127.0.0.1'),
   port: z.number().default(3306),
   user: z.string().default('root'),
@@ -67,7 +73,7 @@ export const Config = z.object({
 })
 
 const SCHEMA_TABLES_SQL = `
-  SELECT t.TABLE_NAME, t.TABLE_COMMENT,
+  SELECT t.TABLE_SCHEMA, t.TABLE_NAME, t.TABLE_COMMENT,
          c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE, c.COLUMN_COMMENT
   FROM information_schema.TABLES t
   JOIN information_schema.COLUMNS c
@@ -95,12 +101,14 @@ function sanitizeCell(value: unknown): unknown {
   return value
 }
 
-export class MysqlDataQueryService extends DataQueryService {
+export class MysqlDataQueryService implements DataQueryBackend {
   private readonly pool: mysql.Pool
   private schemaCache: { at: number; schema: DataQueryTable[] } | undefined
 
-  constructor(ctx: Context, private readonly config: Config) {
-    super(ctx)
+  constructor(
+    private readonly ctx: Context,
+    private readonly config: Config,
+  ) {
     this.pool = mysql.createPool({
       host: config.host,
       port: config.port,
@@ -333,11 +341,17 @@ function groupSchema(
 }
 
 export const name = 'data-query-mysql'
-export const inject = ['llm']
+export const inject = ['dataQuery', 'llm']
 
 export function apply(ctx: Context, config: Config): () => Promise<void> {
   const service = new MysqlDataQueryService(ctx, config)
-  return () => service.stop()
+  const unregister = ctx.dataQuery.register(config.sourceId, service, {
+    default: config.isDefault,
+  })
+  return async () => {
+    unregister()
+    await service.stop()
+  }
 }
 
 // Re-exported for consumers/tests that used the provider-local copies.

@@ -2,9 +2,10 @@
  * dsh-tool-data-query — Consumer/Tool layer.
  *
  * Registers the `data_query` tool. The agent calls it with a natural-language
- * question; the active `ctx.dataQuery` provider (MySQL today, PostgreSQL or
- * ClickHouse tomorrow) owns schema discovery, text-to-sql, validation, and
- * execution. This tool never changes when the provider is swapped.
+ * question and an optional `source` id; the `dataQuery` facade routes to the
+ * matching registered backend (MySQL, PostgreSQL, …), which owns schema
+ * discovery, text-to-sql, validation, and execution. This tool never changes
+ * when providers are added, removed, or swapped.
  */
 import { type Context } from '@deepseek-ai/cordis'
 import { defineTool, type JsonValue } from '@deepseek-ai/dsh-tools'
@@ -40,17 +41,29 @@ function renderQueryResult(value: {
 }
 
 export function apply(ctx: Context): void {
+  const sources = ctx.dataQuery.list()
+  const sourceList = sources.map((s) => s.id).join(', ')
+  const sourceNote =
+    sources.length > 0
+      ? ` Available data sources: ${sourceList}. Pass \`source\` to query a specific one; omit for the default.`
+      : ' No data source is registered yet — load a provider plugin first.'
+
   ctx.tools.register(
     defineTool({
       name: 'data_query',
       description:
-        'Query business data using natural language. Returns the executed SQL, the column names, and up to a bounded number of rows. Use this FIRST to fetch data, then pass the returned rows to generate_chart when the user asks for a chart. Example: "查询最近 30 天订单数量".',
+        'Query business data using natural language. Returns the executed SQL, the column names, and up to a bounded number of rows. Use this FIRST to fetch data, then pass the returned rows to generate_chart when the user asks for a chart. Example: "查询最近 30 天订单数量".' +
+        sourceNote,
       parameters: {
         question: {
           type: 'string',
           required: true,
           description:
             'The natural-language business question, e.g. "统计最近 30 天订单数量" or "按月份统计今年各月的销售额".',
+        },
+        source: {
+          type: 'string',
+          description: `Data source id to query.${sources.length > 0 ? ` Available: ${sourceList}.` : ''} Omit for the default source.`,
         },
         maxRows: {
           type: 'integer',
@@ -75,6 +88,7 @@ export function apply(ctx: Context): void {
       async execute(args, exec) {
         const result: DataQueryResult = await ctx.dataQuery.query({
           question: args.question,
+          ...(args.source !== undefined ? { source: args.source } : {}),
           ...(args.maxRows !== undefined ? { maxRows: args.maxRows } : {}),
           signal: exec.signal,
           // Text-to-SQL reuses the conversation's own LLM route so generation

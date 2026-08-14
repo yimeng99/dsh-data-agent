@@ -37,12 +37,15 @@ Service，Agent 通过 Tool 消费它，更换数据库 Provider **完全不需�
 
 - **自然语言 → SQL**：Agent 把业务问题翻译成只读 SQL，且复用会话同一条 LLM 路由
   （Text-to-SQL 与对话使用同一个模型）。
+- **多数据源路由**：任意数量的数据库可同时生效——每个 Provider 实例按
+  `sourceId` 注册（如 `mysql`、`demo2`、`postgresql`），`data_query` 工具通过
+  `source` 参数路由。
 - **Schema 自动发现**：从 `information_schema` 读取表、列、注释、外键（带 TTL
   缓存）并喂给模型。
 - **安全默认**：仅允许 `SELECT` / `WITH`；写操作 / DDL 关键字一律拒绝；`LIMIT`
   自动钳制；每次执行有超时预算并全程透传 `AbortSignal`。
-- **Provider 可替换**：MySQL 已可用，PostgreSQL 已实现——新增 ClickHouse /
-  Doris 只需照抄一个 Provider 包。
+- **Provider 可替换**：MySQL、PostgreSQL 已实现——新增 ClickHouse / Doris 只需
+  照抄一个 Provider 包。
 - **图表**：`generate_chart` 把查询结果转成可直接渲染的 ECharts option
   （line / bar / pie / scatter）。
 
@@ -50,10 +53,10 @@ Service，Agent 通过 Tool 消费它，更换数据库 Provider **完全不需�
 
 | 包 | 层 | 职责 |
 | --- | --- | --- |
-| `packages/dsh-data-query` | Service Definition | 定义 `dataQuery` 能力（请求/结果/错误类型 + 抽象服务 + 共享 SQL 安全工具），不接触具体数据库 |
-| `packages/dsh-data-query-mysql` | Provider | MySQL 实现：information_schema 自动发现 → LLM Text-to-SQL → SQL 安全校验 → 只读执行 |
-| `packages/dsh-data-query-postgres` | Provider | PostgreSQL 实现（V0.2，接口与 MySQL 完全一致） |
-| `packages/dsh-tool-data-query` | Consumer / Tool | 注册 `data_query` 工具，把自然语言问题转发给 `ctx.dataQuery` |
+| `packages/dsh-data-query` | Service Definition + 门面 | 定义 `dataQuery` 能力（请求/结果/错误类型 + 共享 SQL 安全工具），并挂载路由门面 `ctx.dataQuery`，Provider 在它上面注册后端 |
+| `packages/dsh-data-query-mysql` | Provider | MySQL 后端：information_schema 自动发现 → LLM Text-to-SQL → SQL 安全校验 → 只读执行（每个 `sourceId` 一个实例） |
+| `packages/dsh-data-query-postgres` | Provider | PostgreSQL 后端（V0.2，接口与 MySQL 完全一致） |
+| `packages/dsh-tool-data-query` | Consumer / Tool | 注册 `data_query` 工具（带 `source` 参数），把自然语言问题转发给 `ctx.dataQuery` |
 | `packages/dsh-tool-echarts` | Consumer / Tool | 注册 `generate_chart` 工具，表格数据 → ECharts option |
 
 ## 环境要求
@@ -125,12 +128,9 @@ export DSH_DB_PASSWORD='你的MySQL密码'    # PowerShell: $env:DSH_DB_PASSWORD
 dsh web --patch ./cordis.patch.yml
 ```
 
-`cordis.patch.yml` 会注册 `data-query-mysql`（作为 `ctx.dataQuery`）以及
-`data_query`、`generate_chart` 两个工具。若 HMR 未自动生效，重启 `dsh web`。
-
-> **同时只能有一个 Provider 生效。** 想用 PostgreSQL：把 `cordis.patch.yml`
-> 里 MySQL 块注释掉、取消 PostgreSQL 块注释，并用同样方式安装
-> `dsh-data-query-postgres`。
+`cordis.patch.yml` 会挂载 `dataQuery` 门面、注册**两个 MySQL 数据源**（`mysql`
+→ `demo`，默认；`demo2` → `demo2` 库）以及 `data_query`、`generate_chart` 两个
+工具（PostgreSQL 数据源以注释示例给出）。若 HMR 未自动生效，重启 `dsh web`。
 
 ### 5. 试试
 
@@ -139,21 +139,35 @@ dsh web --patch ./cordis.patch.yml
 - 「统计一下最近 30 天订单数量」
 - 「查询产品销量前 10」
 - 「帮我分析最近 12 个月订单趋势，并画一个折线图」
+- 「用 demo2 数据源统计订单数量」
 
-Agent 会自动依次调用 `data_query` → `generate_chart`。
+Agent 会自动调用 `data_query`（你说到具体数据源时会带上 `source`）→
+`generate_chart`。
 
-## 换 Provider（演示 Capability Seam）
+## 多数据源
 
-只有 **一个** Provider 能注册 `ctx.dataQuery`。切到 PostgreSQL：
+任意数量的 Provider 实例可同时生效——每个实例按 `sourceId` 注册：
 
-```bash
-dsh plugin --profile web add file:$REPO/packages/dsh-data-query-postgres
-dsh plugin --profile web remove dsh-data-query-mysql
+```yaml
+- id: data-query
+  name: 'dsh-data-query'            # 门面：ctx.dataQuery
+
+- id: data-query-mysql              # 数据源 1：默认
+  name: 'dsh-data-query-mysql'
+  config: { sourceId: 'mysql', isDefault: true, database: 'demo', ... }
+
+- id: data-query-mysql-demo2        # 数据源 2：另一个 MySQL 实例
+  name: 'dsh-data-query-mysql'
+  config: { sourceId: 'demo2', database: 'demo2', ... }
+
+- id: data-query-postgres           # 数据源 3：PostgreSQL
+  name: 'dsh-data-query-postgres'
+  config: { sourceId: 'postgresql', database: 'demo', ... }
 ```
 
-`dsh-tool-data-query` / `dsh-tool-echarts` 一行都不用改。新增方言
-（ClickHouse / Doris / SQLServer…）只需照抄 `dsh-data-query-mysql` 实现一个
-Provider 包。
+`data_query` 工具的 `source` 参数选择后端；省略时用默认源（第一个注册的 /
+`isDefault: true`）。新增方言（ClickHouse / Doris / SQLServer…）只需照抄
+`dsh-data-query-mysql` 实现一个 Provider 包。
 
 ## 安全设计（V0.1 已内置）
 
@@ -188,12 +202,17 @@ SQL: SELECT COUNT(*) FROM orders WHERE created_at >= NOW() - INTERVAL 30 DAY
 
 以及双工具协作（`data_query` + `generate_chart`）产出 12 个月订单趋势折线图。
 
+多数据源路由（真实 LLM）：两个 MySQL 数据源（`mysql` → `demo`、`demo2` →
+`demo2`）并存，Agent 按 `source` 路由——「统计 demo2 数据源订单总数」返回
+361，而默认数据源返回 360，证明注册表按问题选中了正确的库。
+
 ## 路线图
 
 | 版本 | 内容 | 状态 |
 | --- | --- | --- |
 | V0.1 | MySQL + `data_query` + Text-to-SQL + 基础 SQL 校验 | ✅ |
 | V0.2 | PostgreSQL Provider；Schema 缓存与注释增强 | ✅ 已实现，真库验证待补 |
+| V0.2.5 | 多数据源路由：`dataQuery` 门面 + 按实例 `sourceId` 注册表 | ✅ |
 | V0.3 | SQL AST 校验器；`maxRows`/`timeout` 精细化；审计日志 | — |
 | V0.4 | ECharts line/bar/pie/scatter 已含；自定义客户端渲染模块 | tool 已含 |
 | V0.5 | Permission-aware Text-to-SQL：RBAC / Tenant / Data Scope 策略引擎 + SQL 改写 | — |

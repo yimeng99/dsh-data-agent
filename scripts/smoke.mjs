@@ -2,24 +2,31 @@
  * Wiring smoke test for dsh-data-agent V0.1 (no database required).
  *
  * Verifies the actual Cordis mechanics end to end:
- *   1. the MySQL provider registers `ctx.dataQuery` when applied;
- *   2. the `data_query` tool registers itself with the expected schema;
- *   3. the ECharts option builder produces a valid option;
- *   4. the SQL validator blocks write statements and clamps LIMIT.
+ *   1. the `dataQuery` facade mounts and the MySQL provider registers a source;
+ *   2. multi-source routing (register/resolve/list/unknown/duplicate);
+ *   3. the `data_query` tool registers itself with the expected schema;
+ *   4. the ECharts option builder produces a valid option;
+ *   5. the SQL validator blocks write statements and clamps LIMIT.
  *
  * Run: node scripts/smoke.mjs
  */
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
+import * as dq from 'dsh-data-query'
 import * as provider from 'dsh-data-query-mysql'
 import * as tool from 'dsh-tool-data-query'
 import { buildEChartsOption } from 'dsh-tool-echarts'
 
 // ---------------------------------------------------------------------------
-// 1. Provider registers ctx.dataQuery (pool creation is lazy, no DB needed)
+// 1. Facade mounts; MySQL provider registers a source (pool is lazy, no DB)
 // ---------------------------------------------------------------------------
 const ctx = new Context()
+dq.apply(ctx)
+assert.ok(ctx.dataQuery, 'ctx.dataQuery facade must exist after applying dsh-data-query')
+
 const dispose = provider.apply(ctx, {
+  sourceId: 'mysql',
+  isDefault: true,
   host: '127.0.0.1',
   port: 3306,
   user: 'root',
@@ -32,17 +39,64 @@ const dispose = provider.apply(ctx, {
   schemaCacheTtlMs: 60000,
 })
 
-const service = ctx.get('dataQuery')
-assert.ok(service, 'ctx.dataQuery must be provided after applying the MySQL provider')
-assert.equal(service.capabilities().dialect, 'mysql')
-assert.equal(service.capabilities().readOnly, true)
-assert.equal(typeof service.query, 'function')
-assert.equal(typeof service.refreshSchema, 'function')
+const sources = ctx.dataQuery.list()
+assert.equal(sources.length, 1)
+assert.equal(sources[0].id, 'mysql')
+assert.equal(sources[0].capabilities.dialect, 'mysql')
+assert.equal(sources[0].capabilities.readOnly, true)
+assert.equal(typeof ctx.dataQuery.query, 'function')
+assert.equal(typeof ctx.dataQuery.refreshSchema, 'function')
 
 // ---------------------------------------------------------------------------
-// 2. Tool registers data_query with the expected contract
+// 2. Multi-source routing (fake backends, no DB involved)
+// ---------------------------------------------------------------------------
+const fakeBackend = {
+  query: async (request) => ({
+    sql: `SELECT '${request.source ?? 'default'}'`,
+    columns: ['src'],
+    rows: [{ src: request.source ?? 'default' }],
+    truncated: false,
+    rowCount: 1,
+    elapsedMs: 0,
+  }),
+  capabilities: () => ({ dialect: 'fake', readOnly: true, supportsSchemaDiscovery: false }),
+  refreshSchema: async () => {},
+}
+
+const unregisterA = ctx.dataQuery.register('analytics', fakeBackend, { default: true })
+const unregisterB = ctx.dataQuery.register('reports', fakeBackend)
+assert.deepEqual(
+  ctx.dataQuery.list().map((s) => s.id),
+  ['mysql', 'analytics', 'reports'],
+)
+
+// explicit source routing
+assert.equal((await ctx.dataQuery.query({ question: 'x', source: 'analytics' })).rows[0].src, 'analytics')
+// default source is 'analytics' (registered with default: true)
+assert.equal((await ctx.dataQuery.query({ question: 'x' })).rows[0].src, 'analytics')
+
+// unknown source -> typed error
+await assert.rejects(
+  ctx.dataQuery.query({ question: 'x', source: 'nope' }),
+  (err) => err.code === 'NO_SOURCE',
+)
+
+// duplicate registration -> typed error
+assert.throws(
+  () => ctx.dataQuery.register('mysql', fakeBackend),
+  (err) => err.code === 'DUPLICATE_SOURCE',
+)
+
+// unregister keeps the default source intact
+unregisterB()
+assert.equal((await ctx.dataQuery.query({ question: 'x' })).rows[0].src, 'analytics')
+unregisterA()
+
+// ---------------------------------------------------------------------------
+// 3. Tool registers data_query with the expected contract
 // ---------------------------------------------------------------------------
 const toolsCtx = new Context()
+dq.apply(toolsCtx)
 let registered
 toolsCtx.provide('tools', {
   register: (definition) => {
@@ -55,13 +109,14 @@ assert.equal(registered.name, 'data_query')
 // requiredness becomes a top-level `required` array.
 assert.equal(registered.parameters.type, 'object')
 assert.equal(registered.parameters.properties.question.type, 'string')
+assert.equal(registered.parameters.properties.source.type, 'string')
 assert.deepEqual(registered.parameters.required, ['question'])
 assert.equal(registered.output.schema.properties.sql.type, 'string')
 assert.ok(registered.output.schema.required.includes('sql'))
 assert.ok(registered.execute, 'tool must expose execute')
 
 // ---------------------------------------------------------------------------
-// 3. ECharts option builder (pure)
+// 4. ECharts option builder (pure)
 // ---------------------------------------------------------------------------
 const line = buildEChartsOption({
   type: 'line',
@@ -93,7 +148,7 @@ assert.deepEqual(pie.series[0].data, [
 ])
 
 // ---------------------------------------------------------------------------
-// 4. SQL validator (pure): allow SELECT, reject writes, clamp LIMIT
+// 5. SQL validator (pure): allow SELECT, reject writes, clamp LIMIT
 // ---------------------------------------------------------------------------
 const { extractSql, validateReadOnlySql } = provider
 assert.equal(extractSql('```sql\nSELECT 1\n```'), 'SELECT 1')
@@ -119,4 +174,4 @@ for (const bad of [
 assert.throws(() => validateReadOnlySql('SELECT 1; DROP TABLE orders', 100, false))
 
 await dispose()
-console.log('smoke OK — provider, tool, chart builder and validator all wired correctly')
+console.log('smoke OK — facade, multi-source routing, tool, chart builder and validator all wired correctly')

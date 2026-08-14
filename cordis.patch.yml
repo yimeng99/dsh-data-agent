@@ -1,49 +1,67 @@
 # =============================================================================
-# dsh-data-agent — DeepSeek Harness profile overlay
+# dsh-data-agent — DeepSeek Harness profile overlay (multi-source)
 # =============================================================================
 # Apply with:
 #   dsh --profile web --patch ./cordis.patch.yml
 #
 # Prerequisite: the workspace packages must be resolvable from the profile
-# (see README.md "接线到 DeepSeek Harness"):
+# (see README.md "安装方法"):
 #   - link packages/<pkg> into $DSH_HOME/profiles/node_modules, or
 #   - `dsh plugin --profile web add file:<abs path>/packages/<pkg>` for each.
 #
-# NOTE: exactly ONE data provider may be active — both MySQL and PostgreSQL
-# register the same `ctx.dataQuery` service and Cordis rejects a duplicate
-# registration. Switch providers by commenting one block out and uncommenting
-# the other; the tools (`dsh-tool-data-query`, `dsh-tool-echarts`) never change.
+# MULTI-SOURCE: any number of provider instances can be active at once. Each
+# instance registers under a distinct `sourceId`; the `data_query` tool routes
+# by its `source` argument (omitted → the default source).
 #
 # Secrets are read from the environment: set DSH_DB_PASSWORD before boot.
 # -----------------------------------------------------------------------------
 
 - insert:
-    # NOTE: `dsh-data-query` (the Service Definition library) needs NO loader
-    # row — providers import it directly, like the official `dsh-fs` package.
+    # Facade: mounts `ctx.dataQuery` (the routing registry). Providers depend
+    # on it via `inject: ['dataQuery']`.
+    - id: data-query
+      name: 'dsh-data-query'
 
-    # Provider: MySQL implementation of `ctx.dataQuery`.
+    # Source 1: MySQL `demo` (default when `source` is omitted).
     - id: data-query-mysql
       name: 'dsh-data-query-mysql'
       config:
+        sourceId: 'mysql'
+        isDefault: true
         host: '127.0.0.1'
         port: 3306
         user: 'root'
         password: !!js process.env.DSH_DB_PASSWORD ?? ''
         database: 'demo'
-        # LLM route used for Text-to-SQL generation (the tool forwards the
-        # conversation's own route when the agent carries one).
         llmProvider: 'deepseek-official'
         llmModel: 'deepseek-v4-flash'
-        # Safety rails.
         maxRows: 100
         timeoutMs: 15000
-        # information_schema cache TTL (ms); 0 disables caching.
         schemaCacheTtlMs: 60000
 
-    # Provider (disabled by default): PostgreSQL implementation of `ctx.dataQuery`.
+    # Source 2: a second MySQL instance (another database on the same server).
+    - id: data-query-mysql-demo2
+      name: 'dsh-data-query-mysql'
+      config:
+        sourceId: 'demo2'
+        isDefault: false
+        host: '127.0.0.1'
+        port: 3306
+        user: 'root'
+        password: !!js process.env.DSH_DB_PASSWORD ?? ''
+        database: 'demo2'
+        llmProvider: 'deepseek-official'
+        llmModel: 'deepseek-v4-flash'
+        maxRows: 100
+        timeoutMs: 15000
+        schemaCacheTtlMs: 60000
+
+    # Source 3 (optional): PostgreSQL. Uncomment to add a third data source.
     # - id: data-query-postgres
     #   name: 'dsh-data-query-postgres'
     #   config:
+    #     sourceId: 'postgresql'
+    #     isDefault: false
     #     host: '127.0.0.1'
     #     port: 5432
     #     user: 'postgres'
@@ -54,7 +72,7 @@
     #     maxRows: 100
     #     timeoutMs: 15000
 
-    # Consumer: exposes `data_query` to the agent.
+    # Consumer: exposes `data_query` to the agent (routes by `source`).
     - id: tool-data-query
       name: 'dsh-tool-data-query'
 
