@@ -56,10 +56,11 @@ Tools.
 | Package | Layer | Responsibility |
 | --- | --- | --- |
 | `packages/dsh-data-query` | Service Definition + Facade | Declares the `dataQuery` capability (request/result/error types + shared SQL-safety utilities) and mounts the routing facade (`ctx.dataQuery`) that providers register backends on |
+| `packages/dsh-data-query-config` | Management (Settings) | Registers the `data-query-sources` settings namespace — the Web UI settings page renders it as a form; instantiates the matching provider backend per configured source and re-registers them **live** on every edit |
 | `packages/dsh-data-query-mysql` | Provider | MySQL backend: information_schema discovery → LLM Text-to-SQL → SQL validation → read-only execution (one instance per `sourceId`) |
 | `packages/dsh-data-query-postgres` | Provider | PostgreSQL backend (V0.2, same interface as MySQL) |
 | `packages/dsh-tool-data-query` | Consumer / Tool | Registers the `data_query` tool (with a `source` argument); forwards natural-language questions to `ctx.dataQuery` |
-| `packages/dsh-tool-echarts` | Consumer / Tool | Registers the `generate_chart` tool; tabular rows → ECharts option |
+| `packages/dsh-tool-echarts` | Consumer / Tool | Registers the `generate_chart` tool: tabular rows → ECharts option **plus a self-contained HTML page** that renders the real chart |
 
 ## Requirements
 
@@ -123,19 +124,32 @@ done
 
 ### 4. Apply the profile overlay and start
 
-The database password is read from the environment — never hardcode it in files:
-
 ```bash
-export DSH_DB_PASSWORD='your-mysql-password'    # PowerShell: $env:DSH_DB_PASSWORD = '...'
 dsh web --patch ./cordis.patch.yml
 ```
 
-`cordis.patch.yml` mounts the `dataQuery` facade, registers **two MySQL data
-sources** (`mysql` → `demo`, default; `demo2` → `demo2`) plus the `data_query`
-and `generate_chart` tools (a PostgreSQL source is included as a commented
-example). Restart `dsh web` if HMR does not pick the change up automatically.
+`cordis.patch.yml` mounts `dsh-data-query-config` (the settings-driven data
+source manager) plus the `data_query` and `generate_chart` tools. Restart
+`dsh web` if HMR does not pick the change up automatically.
 
-### 5. Try it
+### 5. Configure your database connections (Web UI)
+
+No YAML editing needed — the settings page renders the **`data-query-sources`**
+namespace as a form. Add one entry per database:
+
+| Field | Meaning |
+| --- | --- |
+| `sourceId` | Unique id used by the `data_query` tool's `source` argument (e.g. `mysql`, `demo2`, `postgres`) |
+| `dialect` | `mysql` or `postgresql` |
+| `host` / `port` / `user` / `password` / `database` | Connection settings (password is stored, **never echoed back** to the UI) |
+| `isDefault` | Fallback source when `source` is omitted |
+| `llmProvider` / `llmModel` | Text-to-SQL route (defaults to the conversation's model) |
+| `maxRows` / `timeoutMs` | Safety rails |
+
+Changes apply **live** — backends re-register without a restart. The same
+section is stored in `$DSH_HOME/settings.yaml` under `data-query-sources:`.
+
+### 6. Try it
 
 In the Web UI (new conversation), just ask:
 
@@ -144,35 +158,35 @@ In the Web UI (new conversation), just ask:
 - 「帮我分析最近 12 个月订单趋势，并画一个折线图」/ "Analyze the 12-month order trend and draw a line chart"
 - 「用 demo2 数据源统计订单数量」/ "Count orders in the **demo2** data source"
 
-The agent will call `data_query` (routing by `source` when you name one) →
-`generate_chart` automatically.
+## Chart Display
+
+`generate_chart` returns two things: an ECharts **option** object the model can
+reason about, and a **self-contained HTML page** (ECharts loaded from a CDN)
+that renders the real chart. When you ask for a chart, the agent saves the HTML
+with the `write` tool (e.g. `charts/trend.html`); the produced file appears in
+the chat's **deliverables** row and opens as a live, interactive chart.
+
+A future client plugin can render the same option inline in the chat (via the
+tool-result presentation seam) — that is separate Web UI work.
 
 ## Multiple Data Sources
 
-Any number of provider instances can be active at once — each registers under a
-distinct `sourceId`:
+Any number of databases can be active at once. Add them in the settings page
+(see above) — each entry registers a backend under its `sourceId`:
 
 ```yaml
-- id: data-query
-  name: 'dsh-data-query'            # facade: ctx.dataQuery
-
-- id: data-query-mysql              # source 1: default
-  name: 'dsh-data-query-mysql'
-  config: { sourceId: 'mysql', isDefault: true, database: 'demo', ... }
-
-- id: data-query-mysql-demo2        # source 2: another MySQL instance
-  name: 'dsh-data-query-mysql'
-  config: { sourceId: 'demo2', database: 'demo2', ... }
-
-- id: data-query-postgres           # source 3: PostgreSQL
-  name: 'dsh-data-query-postgres'
-  config: { sourceId: 'postgresql', database: 'demo', ... }
+# $DSH_HOME/settings.yaml — written by the settings page
+data-query-sources:
+  sources:
+    - { sourceId: mysql,      dialect: mysql,      database: demo,  isDefault: true }
+    - { sourceId: demo2,      dialect: mysql,      database: demo2, isDefault: false }
+    - { sourceId: postgresql, dialect: postgresql, database: demo,  isDefault: false }
 ```
 
 The `data_query` tool's `source` argument picks the backend; omitted → the
-default (first registered / `isDefault: true`). New dialects (ClickHouse /
-Doris / SQLServer…) are just another provider package mirroring
-`dsh-data-query-mysql`.
+default source. New dialects (ClickHouse / Doris / SQLServer…) are just another
+provider package mirroring `dsh-data-query-mysql`, wired into
+`dsh-data-query-config`'s `instantiateBackend`.
 
 ## Security Design (built into V0.1)
 
@@ -224,9 +238,9 @@ Multi-source routing with the real LLM: two MySQL sources (`mysql` → `demo`,
 | V0.1 | MySQL + `data_query` + Text-to-SQL + basic SQL validation | ✅ |
 | V0.2 | PostgreSQL provider; schema cache & comment enrichment | ✅ implemented, live-DB test pending |
 | V0.2.5 | Multi-source routing: `dataQuery` facade + per-instance `sourceId` registry | ✅ |
-| V0.3 | SQL AST validator; finer `maxRows`/`timeout`; audit log | — |
-| V0.4 | ECharts line/bar/pie/scatter included; custom client render module | tool included |
-| V0.5 | Permission-aware Text-to-SQL: RBAC / Tenant / Data Scope policy engine + SQL rewrite | — |
+| V0.3 | Settings-UI data source configuration (`data-query-sources`, live) + self-contained chart HTML deliverable | ✅ |
+| V0.4 | SQL AST validator; finer `maxRows`/`timeout`; audit log | — |
+| V0.5 | Inline chart cards (client plugin) + Permission-aware Text-to-SQL: RBAC / Tenant / Data Scope | — |
 
 ## Design Notes
 

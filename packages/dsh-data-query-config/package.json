@@ -1,0 +1,33 @@
+{
+  "name": "dsh-data-query-config",
+  "version": "0.1.0",
+  "description": "Settings-driven data source management for dsh-data-agent: configure MySQL/PostgreSQL connections in the Web UI settings page (data-query-sources), applied live",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js"
+    }
+  },
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rimraf lib"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "dsh-data-query": "file:../dsh-data-query",
+    "dsh-data-query-mysql": "file:../dsh-data-query-mysql",
+    "dsh-data-query-postgres": "file:../dsh-data-query-postgres"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

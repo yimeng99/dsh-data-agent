@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import mysql from 'mysql2/promise'
-import * as dq from 'dsh-data-query'
+import * as configPlugin from 'dsh-data-query-config'
 import * as provider from 'dsh-data-query-mysql'
 
 const host = process.env.DSH_DB_HOST ?? '127.0.0.1'
@@ -62,42 +62,62 @@ const llmStub = {
 }
 
 // ---------------------------------------------------------------------------
-// Boot: context + facade + stub llm + two real MySQL providers
+// Boot: context + stub llm + settings-driven config (two real MySQL sources)
 // ---------------------------------------------------------------------------
 const ctx = new Context()
-dq.apply(ctx)
 ctx.provide('llm', llmStub)
 
-const makeConfig = (sourceId, db, isDefault) => ({
+// In-memory settings provider standing in for the Web UI settings page:
+// the config plugin reads `data-query-sources` from it and registers backends.
+const makeSource = (sourceId, db, isDefault) => ({
   sourceId,
-  isDefault,
+  dialect: 'mysql',
   host,
   port,
   user,
   password,
   database: db,
+  isDefault,
   llmProvider: 'stub',
   llmModel: 'stub',
   maxRows: 100,
   timeoutMs: 5000,
-  schemaCacheTtlMs: 60000,
+})
+const sources = [
+  makeSource('mysql', database, true),
+  makeSource('demo2', database2, false),
+]
+ctx.provide('settings', {
+  register: (ns) => {
+    assert.equal(ns, 'data-query-sources')
+    return {
+      get: () => ({ sources }),
+      watch: () => () => {},
+      update: async () => {},
+      replace: async () => {},
+    }
+  },
 })
 
-const dispose1 = provider.apply(ctx, makeConfig('mysql', database, true))
-const dispose2 = provider.apply(ctx, makeConfig('demo2', database2, false))
+const dispose = configPlugin.apply(ctx)
 
 const dataQuery = ctx.get('dataQuery')
-assert.ok(dataQuery, 'ctx.dataQuery facade must be provided')
+assert.ok(dataQuery, 'ctx.dataQuery facade must be provided by the config plugin')
 assert.deepEqual(
   dataQuery.list().map((s) => s.id),
   ['mysql', 'demo2'],
-  'both sources must be registered',
+  'both UI-configured sources must be registered',
 )
 
-// Reference connection for expected values.
+// Reference connections for expected values.
 const db = await mysql.createConnection({ host, port, user, password, database })
+const db2 = await mysql.createConnection({ host, port, user, password, database: database2 })
 const ref = async (sql) => {
   const [rows] = await db.query(sql)
+  return rows
+}
+const ref2 = async (sql) => {
+  const [rows] = await db2.query(sql)
   return rows
 }
 
@@ -191,14 +211,17 @@ try {
   assert.equal(defaultCount, 360, 'default source must be `mysql` (demo)')
 
   const demo2 = await dataQuery.query({ question: 'x', source: 'demo2', sql: 'SELECT COUNT(*) AS c FROM orders' })
-  assert.equal(demo2.rows[0].c, 360, 'explicit source `demo2` must query the demo2 database')
+  const demo2Total = (await ref2('SELECT COUNT(*) AS c FROM orders'))[0].c
+  assert.equal(demo2.rows[0].c, demo2Total, 'explicit source `demo2` must query the demo2 database')
   assert.ok(demo2.schema.every((t) => t.schema === 'demo2'), 'schema snapshot must come from demo2')
 
-  // Text-to-sql also routes per source: the same question on demo2 (identical
-  // seed data, so the 30-day count must match demo's).
+  // Text-to-sql also routes per source: the same question on demo2.
   llmStub.lastQuestion = '统计最近 30 天订单数量'
   const demo2Nl = await dataQuery.query({ question: '统计最近 30 天订单数量', source: 'demo2' })
-  assert.equal(demo2Nl.rows[0].order_count, expected30[0].c)
+  const demo2Expected30 = (
+    await ref2('SELECT COUNT(*) AS c FROM orders WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)')
+  )[0].c
+  assert.equal(demo2Nl.rows[0].order_count, demo2Expected30)
 
   await assert.rejects(
     dataQuery.query({ question: 'x', source: 'nope', sql: 'SELECT 1' }),
@@ -210,7 +233,7 @@ try {
     'e2e OK — real MySQL multi-source: schema discovery, text-to-sql, routing (mysql/demo2), LIMIT clamp, rejections, abort',
   )
 } finally {
-  await dispose1()
-  await dispose2()
+  await dispose()
   await db.end()
+  await db2.end()
 }

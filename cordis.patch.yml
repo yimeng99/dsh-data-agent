@@ -1,5 +1,5 @@
 # =============================================================================
-# dsh-data-agent — DeepSeek Harness profile overlay (multi-source)
+# dsh-data-agent — DeepSeek Harness profile overlay (settings-driven)
 # =============================================================================
 # Apply with:
 #   dsh --profile web --patch ./cordis.patch.yml
@@ -9,68 +9,19 @@
 #   - link packages/<pkg> into $DSH_HOME/profiles/node_modules, or
 #   - `dsh plugin --profile web add file:<abs path>/packages/<pkg>` for each.
 #
-# MULTI-SOURCE: any number of provider instances can be active at once. Each
-# instance registers under a distinct `sourceId`; the `data_query` tool routes
-# by its `source` argument (omitted → the default source).
-#
-# Secrets are read from the environment: set DSH_DB_PASSWORD before boot.
+# DATABASE CONNECTIONS ARE CONFIGURED IN THE WEB UI, not in this file:
+# the settings page renders the `data-query-sources` namespace (sourceId /
+# dialect / host / port / user / password / database / default flag), and
+# changes apply LIVE — no restart, no patch edit.
 # -----------------------------------------------------------------------------
 
 - insert:
-    # Facade: mounts `ctx.dataQuery` (the routing registry). Providers depend
-    # on it via `inject: ['dataQuery']`.
-    - id: data-query
-      name: 'dsh-data-query'
-
-    # Source 1: MySQL `demo` (default when `source` is omitted).
-    - id: data-query-mysql
-      name: 'dsh-data-query-mysql'
-      config:
-        sourceId: 'mysql'
-        isDefault: true
-        host: '127.0.0.1'
-        port: 3306
-        user: 'root'
-        password: !!js process.env.DSH_DB_PASSWORD ?? ''
-        database: 'demo'
-        llmProvider: 'deepseek-official'
-        llmModel: 'deepseek-v4-flash'
-        maxRows: 100
-        timeoutMs: 15000
-        schemaCacheTtlMs: 60000
-
-    # Source 2: a second MySQL instance (another database on the same server).
-    - id: data-query-mysql-demo2
-      name: 'dsh-data-query-mysql'
-      config:
-        sourceId: 'demo2'
-        isDefault: false
-        host: '127.0.0.1'
-        port: 3306
-        user: 'root'
-        password: !!js process.env.DSH_DB_PASSWORD ?? ''
-        database: 'demo2'
-        llmProvider: 'deepseek-official'
-        llmModel: 'deepseek-v4-flash'
-        maxRows: 100
-        timeoutMs: 15000
-        schemaCacheTtlMs: 60000
-
-    # Source 3 (optional): PostgreSQL. Uncomment to add a third data source.
-    # - id: data-query-postgres
-    #   name: 'dsh-data-query-postgres'
-    #   config:
-    #     sourceId: 'postgresql'
-    #     isDefault: false
-    #     host: '127.0.0.1'
-    #     port: 5432
-    #     user: 'postgres'
-    #     password: !!js process.env.DSH_DB_PASSWORD ?? ''
-    #     database: 'demo'
-    #     llmProvider: 'deepseek-official'
-    #     llmModel: 'deepseek-v4-flash'
-    #     maxRows: 100
-    #     timeoutMs: 15000
+    # Settings-driven data source manager: mounts ctx.dataQuery, registers the
+    # `data-query-sources` settings namespace, instantiates the matching
+    # provider backend per configured source (mysql / postgresql), and
+    # re-registers them live on every settings change.
+    - id: data-query-config
+      name: 'dsh-data-query-config'
 
     # Consumer: exposes `data_query` to the agent (routes by `source`).
     - id: tool-data-query

@@ -54,10 +54,11 @@ Service，Agent 通过 Tool 消费它，更换数据库 Provider **完全不需�
 | 包 | 层 | 职责 |
 | --- | --- | --- |
 | `packages/dsh-data-query` | Service Definition + 门面 | 定义 `dataQuery` 能力（请求/结果/错误类型 + 共享 SQL 安全工具），并挂载路由门面 `ctx.dataQuery`，Provider 在它上面注册后端 |
+| `packages/dsh-data-query-config` | 管理（设置） | 注册 `data-query-sources` settings namespace——Web UI 设置页以表单渲染；按配置实例化对应方言后端，**每次修改实时生效** |
 | `packages/dsh-data-query-mysql` | Provider | MySQL 后端：information_schema 自动发现 → LLM Text-to-SQL → SQL 安全校验 → 只读执行（每个 `sourceId` 一个实例） |
 | `packages/dsh-data-query-postgres` | Provider | PostgreSQL 后端（V0.2，接口与 MySQL 完全一致） |
 | `packages/dsh-tool-data-query` | Consumer / Tool | 注册 `data_query` 工具（带 `source` 参数），把自然语言问题转发给 `ctx.dataQuery` |
-| `packages/dsh-tool-echarts` | Consumer / Tool | 注册 `generate_chart` 工具，表格数据 → ECharts option |
+| `packages/dsh-tool-echarts` | Consumer / Tool | 注册 `generate_chart` 工具：表格数据 → ECharts option **+ 自包含 HTML 页面**（浏览器可直接渲染真图表） |
 
 ## 环境要求
 
@@ -121,18 +122,31 @@ done
 
 ### 4. 应用 overlay 并启动
 
-数据库密码从环境变量读取，**不要写进任何文件**：
-
 ```bash
-export DSH_DB_PASSWORD='你的MySQL密码'    # PowerShell: $env:DSH_DB_PASSWORD = '...'
 dsh web --patch ./cordis.patch.yml
 ```
 
-`cordis.patch.yml` 会挂载 `dataQuery` 门面、注册**两个 MySQL 数据源**（`mysql`
-→ `demo`，默认；`demo2` → `demo2` 库）以及 `data_query`、`generate_chart` 两个
-工具（PostgreSQL 数据源以注释示例给出）。若 HMR 未自动生效，重启 `dsh web`。
+`cordis.patch.yml` 挂载 `dsh-data-query-config`（设置驱动的数据源管理器）以及
+`data_query`、`generate_chart` 两个工具。若 HMR 未自动生效，重启 `dsh web`。
 
-### 5. 试试
+### 5. 在设置页配置数据库连接（Web UI）
+
+**不需要改任何 YAML**——设置页会把 **`data-query-sources`** namespace 渲染成表单，
+每个数据库添加一条：
+
+| 字段 | 含义 |
+| --- | --- |
+| `sourceId` | 唯一标识，`data_query` 工具的 `source` 参数用它（如 `mysql`、`demo2`、`postgres`） |
+| `dialect` | `mysql` 或 `postgresql` |
+| `host` / `port` / `user` / `password` / `database` | 连接信息（密码只存不回显） |
+| `isDefault` | 未指定 `source` 时的默认数据源 |
+| `llmProvider` / `llmModel` | Text-to-SQL 路由（默认跟随会话模型） |
+| `maxRows` / `timeoutMs` | 安全上限 |
+
+修改**实时生效**（后端自动重建，无需重启）。同一配置以 `data-query-sources:`
+段存储在 `$DSH_HOME/settings.yaml`。
+
+### 6. 试试
 
 在 Web UI 新开一个会话，直接问：
 
@@ -141,33 +155,34 @@ dsh web --patch ./cordis.patch.yml
 - 「帮我分析最近 12 个月订单趋势，并画一个折线图」
 - 「用 demo2 数据源统计订单数量」
 
-Agent 会自动调用 `data_query`（你说到具体数据源时会带上 `source`）→
-`generate_chart`。
+## 图表展示
+
+`generate_chart` 返回两样东西：ECharts **option** 对象（模型可基于它分析），以及
+一个**自包含 HTML 页面**（CDN 引入 ECharts，任何浏览器可直接渲染真图表）。当你说
+"画个图"时，Agent 会用 `write` 工具把 HTML 存成 `.html` 文件（如
+`charts/trend.html`）；生成的文件出现在聊天**交付物**行，点击即可打开
+可交互的真图表。
+
+未来可通过客户端插件把同一 option 内嵌渲染进聊天（tool-result 展示接缝），
+这是独立的 Web UI 工程。
 
 ## 多数据源
 
-任意数量的 Provider 实例可同时生效——每个实例按 `sourceId` 注册：
+任意数量的数据库可同时生效。在设置页添加即可（见上文）——每条配置按
+`sourceId` 注册一个后端：
 
 ```yaml
-- id: data-query
-  name: 'dsh-data-query'            # 门面：ctx.dataQuery
-
-- id: data-query-mysql              # 数据源 1：默认
-  name: 'dsh-data-query-mysql'
-  config: { sourceId: 'mysql', isDefault: true, database: 'demo', ... }
-
-- id: data-query-mysql-demo2        # 数据源 2：另一个 MySQL 实例
-  name: 'dsh-data-query-mysql'
-  config: { sourceId: 'demo2', database: 'demo2', ... }
-
-- id: data-query-postgres           # 数据源 3：PostgreSQL
-  name: 'dsh-data-query-postgres'
-  config: { sourceId: 'postgresql', database: 'demo', ... }
+# $DSH_HOME/settings.yaml —— 由设置页写入
+data-query-sources:
+  sources:
+    - { sourceId: mysql,      dialect: mysql,      database: demo,  isDefault: true }
+    - { sourceId: demo2,      dialect: mysql,      database: demo2, isDefault: false }
+    - { sourceId: postgresql, dialect: postgresql, database: demo,  isDefault: false }
 ```
 
-`data_query` 工具的 `source` 参数选择后端；省略时用默认源（第一个注册的 /
-`isDefault: true`）。新增方言（ClickHouse / Doris / SQLServer…）只需照抄
-`dsh-data-query-mysql` 实现一个 Provider 包。
+`data_query` 工具的 `source` 参数选择后端；省略时用默认源。新增方言
+（ClickHouse / Doris / SQLServer…）只需照抄 `dsh-data-query-mysql` 实现一个
+Provider 包，并在 `dsh-data-query-config` 的 `instantiateBackend` 里接入。
 
 ## 安全设计（V0.1 已内置）
 
@@ -213,9 +228,9 @@ SQL: SELECT COUNT(*) FROM orders WHERE created_at >= NOW() - INTERVAL 30 DAY
 | V0.1 | MySQL + `data_query` + Text-to-SQL + 基础 SQL 校验 | ✅ |
 | V0.2 | PostgreSQL Provider；Schema 缓存与注释增强 | ✅ 已实现，真库验证待补 |
 | V0.2.5 | 多数据源路由：`dataQuery` 门面 + 按实例 `sourceId` 注册表 | ✅ |
-| V0.3 | SQL AST 校验器；`maxRows`/`timeout` 精细化；审计日志 | — |
-| V0.4 | ECharts line/bar/pie/scatter 已含；自定义客户端渲染模块 | tool 已含 |
-| V0.5 | Permission-aware Text-to-SQL：RBAC / Tenant / Data Scope 策略引擎 + SQL 改写 | — |
+| V0.3 | 设置页配置数据源（`data-query-sources`，实时生效）+ 自包含图表 HTML 交付物 | ✅ |
+| V0.4 | SQL AST 校验器；`maxRows`/`timeout` 精细化；审计日志 | — |
+| V0.5 | 聊天内嵌图表卡片（客户端插件）+ Permission-aware Text-to-SQL：RBAC / Tenant / Data Scope | — |
 
 ## 设计说明
 

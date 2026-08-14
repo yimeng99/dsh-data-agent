@@ -15,6 +15,7 @@ import { Context } from '@deepseek-ai/cordis'
 import * as dq from 'dsh-data-query'
 import * as provider from 'dsh-data-query-mysql'
 import * as tool from 'dsh-tool-data-query'
+import * as configPlugin from 'dsh-data-query-config'
 import { buildEChartsOption } from 'dsh-tool-echarts'
 
 // ---------------------------------------------------------------------------
@@ -173,5 +174,81 @@ for (const bad of [
 }
 assert.throws(() => validateReadOnlySql('SELECT 1; DROP TABLE orders', 100, false))
 
+// ---------------------------------------------------------------------------
+// 6. Settings-driven config plugin: UI-configured sources + live hot-update
+// ---------------------------------------------------------------------------
+const makeSource = (sourceId, dialect, database, isDefault) => ({
+  sourceId,
+  dialect,
+  host: '127.0.0.1',
+  port: dialect === 'mysql' ? 3306 : 5432,
+  user: 'root',
+  password: '',
+  database,
+  isDefault,
+  llmProvider: 'deepseek-official',
+  llmModel: 'deepseek-v4-flash',
+  maxRows: 100,
+  timeoutMs: 15000,
+})
+
+const configCtx = new Context()
+let currentSources = [
+  makeSource('mysql', 'mysql', 'demo', true),
+  makeSource('demo2', 'mysql', 'demo2', false),
+]
+let watcher
+configCtx.provide('settings', {
+  register: (ns, schema) => {
+    assert.equal(ns, 'data-query-sources', 'namespace must be data-query-sources')
+    assert.ok(schema, 'schema must be provided')
+    return {
+      get: () => ({ sources: currentSources }),
+      watch: (cb) => {
+        watcher = cb
+        return () => {
+          watcher = undefined
+        }
+      },
+      update: async () => {},
+      replace: async () => {},
+    }
+  },
+})
+const disposeConfig = configPlugin.apply(configCtx)
+assert.deepEqual(
+  configCtx.dataQuery.list().map((s) => s.id),
+  ['mysql', 'demo2'],
+  'config plugin must register both UI-configured sources',
+)
+assert.equal(
+  configCtx.dataQuery.list().find((s) => s.id === 'mysql').capabilities.dialect,
+  'mysql',
+)
+
+// Simulate a user edit in the settings page: remove demo2 -> backends rebuild.
+currentSources = [makeSource('mysql', 'mysql', 'demo', true)]
+await watcher({ sources: currentSources }, {})
+assert.deepEqual(
+  configCtx.dataQuery.list().map((s) => s.id),
+  ['mysql'],
+  'hot update must unregister removed sources',
+)
+
+// Re-add demo2 via settings edit -> backends rebuild again.
+currentSources = [
+  makeSource('mysql', 'mysql', 'demo', true),
+  makeSource('demo2', 'mysql', 'demo2', false),
+]
+await watcher({ sources: currentSources }, {})
+assert.deepEqual(
+  configCtx.dataQuery.list().map((s) => s.id),
+  ['mysql', 'demo2'],
+  'hot update must register added sources',
+)
+
 await dispose()
-console.log('smoke OK — facade, multi-source routing, tool, chart builder and validator all wired correctly')
+await disposeConfig()
+console.log(
+  'smoke OK — facade, multi-source routing, settings-driven config + hot update, tool, chart builder and validator all wired correctly',
+)

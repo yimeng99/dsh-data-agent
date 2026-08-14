@@ -1,10 +1,14 @@
 /**
  * dsh-tool-echarts — chart generation tool.
  *
- * Registers `generate_chart`: a pure, provider-neutral tool that turns tabular
- * rows into an ECharts option object. V0.4 renders the option as JSON for the
- * model/UI; a custom client module can later draw real charts from the same
- * option (the presentation seam is `presentResult`/`presentationMeta`).
+ * Registers `generate_chart`: turns tabular rows into (1) an ECharts option
+ * object the model can reason about, and (2) a self-contained HTML page that
+ * renders the real chart in any browser. The agent is guided to save `html`
+ * with the `write` tool (e.g. `charts/trend.html`); the produced file then
+ * appears in the chat's deliverables row and opens as a live chart.
+ *
+ * A future client plugin can render the same option inline in the chat via
+ * the tool-result presentation seam (`presentationMeta`).
  */
 import { type Context } from '@deepseek-ai/cordis'
 import { defineTool, type JsonValue } from '@deepseek-ai/dsh-tools'
@@ -24,7 +28,7 @@ interface ChartArgs {
 }
 
 /** Build a ready-to-render ECharts option from tabular rows (pure). */
-function buildEChartsOption(args: ChartArgs): JsonValue {
+export function buildEChartsOption(args: ChartArgs): JsonValue {
   const { type, title, xField, yField, nameField, data } = args
   const rows = data as unknown as Record<string, unknown>[]
   const jv = (value: unknown): JsonValue => value as JsonValue
@@ -61,12 +65,45 @@ function buildEChartsOption(args: ChartArgs): JsonValue {
   } as JsonValue
 }
 
+/** Escape text for safe embedding in HTML. */
+function escHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+/**
+ * Build a self-contained HTML page that renders the option with ECharts
+ * (loaded from a CDN). Openable in any browser; used as a chat deliverable.
+ */
+export function buildChartHtml(option: JsonValue, title = 'chart'): string {
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>${escHtml(title)}</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+</head>
+<body style="margin:0;font-family:system-ui,sans-serif">
+<div id="chart" style="width:100vw;height:100vh"></div>
+<script>
+const option = ${JSON.stringify(option)};
+const chart = echarts.init(document.getElementById('chart'));
+chart.setOption(option);
+window.addEventListener('resize', () => chart.resize());
+</script>
+</body>
+</html>`
+}
+
 export function apply(ctx: Context): void {
   ctx.tools.register(
     defineTool({
       name: 'generate_chart',
       description:
-        'Generate an ECharts option object (line/bar/pie/scatter) from tabular data. Call data_query FIRST to fetch rows, then pass those rows here with the field names to plot. The result can be rendered by the UI.',
+        'Generate a chart from tabular data: returns an ECharts option object plus a self-contained HTML page that renders the real chart. Call data_query FIRST to fetch rows, then pass those rows here with the field names to plot. When the user wants to SEE the chart, save the returned `html` field to a file with the write tool (e.g. write a `charts/trend.html`), so it appears in the deliverables row and opens as a live chart.',
       parameters: {
         type: {
           type: 'string',
@@ -86,14 +123,28 @@ export function apply(ctx: Context): void {
         },
       },
       output: {
-        schema: { type: 'json' },
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            option: { type: 'json', required: true },
+            html: { type: 'string', required: true },
+          },
+        },
         render: (_args, value) => [
-          { type: 'text', text: `ECharts option:\n${JSON.stringify(value, null, 2)}` },
+          {
+            type: 'text',
+            text: `ECharts option:\n${JSON.stringify(value.option, null, 2)}\n\nSelf-contained HTML (${value.html.length} bytes) — save it with the write tool to a .html file to view the live chart.`,
+          },
         ],
       },
-      execute: (args) => Promise.resolve(buildEChartsOption(args)),
+      execute: (args) => {
+        const option = buildEChartsOption(args)
+        return Promise.resolve({
+          option,
+          html: buildChartHtml(option, args.title ?? args.type),
+        })
+      },
     }),
   )
 }
-
-export { buildEChartsOption }

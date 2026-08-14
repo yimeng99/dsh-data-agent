@@ -138,6 +138,9 @@ export interface DataQueryBackend {
 
   /** Drop the cached schema snapshot and reload it from the database. */
   refreshSchema(): Promise<void>
+
+  /** Release provider-owned resources (connection pools). */
+  stop?(): Promise<void>
 }
 
 /** One registered data source entry as seen through {@link DataQueryService.list}. */
